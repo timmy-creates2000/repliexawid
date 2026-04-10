@@ -1,0 +1,5 @@
+{
+  "name": "Repliexa",
+  "description": "A futuristic AI-powered sales agent for modern businesses. Automate negotiations, lead capture, and digital sales with a sci-fi edge.",
+  "requestFramePermissions": ["microphone"]
+}
