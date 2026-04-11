@@ -191,8 +191,8 @@ export default function Dashboard({ config, setConfig }: { config: BusinessConfi
           </div>
         </header>
 
-        {activeTab === 'overview' && <OverviewTab />}
-        {activeTab === 'wallet' && <WalletTab />}
+        {activeTab === 'overview' && <OverviewTab userId={user?.id} />}
+        {activeTab === 'wallet' && <WalletTab userId={user?.id} />}
         {activeTab === 'products' && <ProductsTab config={config} setConfig={setConfig} />}
         {activeTab === 'config' && <ConfigTab config={config} setConfig={setConfig} />}
         {activeTab === 'payments' && <PaymentsTab config={config} setConfig={setConfig} />}
@@ -241,13 +241,51 @@ function StatCard({ title, value, change }: { title: string, value: string, chan
   );
 }
 
-function OverviewTab() {
+function OverviewTab({ userId }: { userId?: string }) {
+  const [stats, setStats] = useState({ totalSales: 0, leadsCount: 0, conversionRate: 0 });
+
+  const fetchStats = () => {
+    if (userId) {
+      fetch(`/api/stats/${userId}`)
+        .then(res => res.json())
+        .then(data => setStats(data))
+        .catch(err => console.error("Stats fetch error:", err));
+    }
+  };
+
+  useEffect(() => {
+    fetchStats();
+  }, [userId]);
+
+  const simulateSale = async () => {
+    if (!userId) return;
+    await fetch('/api/transactions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        userId,
+        amount: 5000 + Math.floor(Math.random() * 10000),
+        method: 'paystack',
+        status: 'success'
+      })
+    });
+    fetchStats();
+  };
+
   return (
     <div className="space-y-8">
+      <div className="flex justify-end">
+        <button 
+          onClick={simulateSale}
+          className="px-4 py-2 bg-cyan-500/10 border border-cyan-500/20 rounded-lg text-[10px] font-bold text-cyan-400 uppercase tracking-widest hover:bg-cyan-500 hover:text-white transition-all"
+        >
+          Simulate Test Sale
+        </button>
+      </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <StatCard title="Total Sales" value="₦145,000" change="+12%" />
-        <StatCard title="Active Leads" value="24" change="+5" />
-        <StatCard title="Conversion Rate" value="18.5%" change="+2.4%" />
+        <StatCard title="Total Sales" value={`₦${stats.totalSales.toLocaleString()}`} change="+0%" />
+        <StatCard title="Active Leads" value={stats.leadsCount.toString()} change="+0" />
+        <StatCard title="Conversion Rate" value={`${stats.conversionRate}%`} change="+0%" />
       </div>
 
       <div className="bg-white/5 border border-white/10 rounded-2xl p-8">
@@ -273,26 +311,40 @@ function OverviewTab() {
   );
 }
 
-function WalletTab() {
+function WalletTab({ userId }: { userId?: string }) {
+  const [transactions, setTransactions] = useState<any[]>([]);
+  const totalBalance = transactions.reduce((acc, curr) => curr.status === 'success' ? acc + curr.amount : acc, 0);
+
+  useEffect(() => {
+    if (userId) {
+      fetch(`/api/transactions/${userId}`)
+        .then(res => res.json())
+        .then(data => {
+          if (Array.isArray(data)) setTransactions(data);
+        })
+        .catch(err => console.error("Transactions fetch error:", err));
+    }
+  }, [userId]);
+
   return (
     <div className="space-y-8">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div className="p-8 bg-cyan-600 rounded-3xl space-y-4 shadow-2xl shadow-cyan-600/20 border border-cyan-400/30 relative overflow-hidden group">
           <div className="absolute inset-0 bg-gradient-to-br from-white/10 to-transparent pointer-events-none" />
           <p className="text-[10px] font-bold text-white/60 uppercase tracking-[0.2em] font-mono">Total Balance</p>
-          <h2 className="text-5xl font-black scifi-glow-text">₦45,200</h2>
+          <h2 className="text-5xl font-black scifi-glow-text">₦{totalBalance.toLocaleString()}</h2>
           <button className="w-full py-3 bg-white text-black rounded-xl font-bold text-xs uppercase tracking-widest hover:bg-cyan-50 transition-all relative z-10">
             Withdraw Funds
           </button>
         </div>
         <div className="p-8 bg-white/5 border border-white/10 rounded-3xl space-y-4">
           <p className="text-sm font-bold text-white/40 uppercase tracking-widest">Pending (Escrow)</p>
-          <h2 className="text-4xl font-bold">₦12,500</h2>
+          <h2 className="text-4xl font-bold">₦0</h2>
           <p className="text-xs text-white/40">Released after delivery confirmation.</p>
         </div>
         <div className="p-8 bg-white/5 border border-white/10 rounded-3xl space-y-4">
           <p className="text-sm font-bold text-white/40 uppercase tracking-widest">Total Withdrawn</p>
-          <h2 className="text-4xl font-bold text-white/60">₦120,000</h2>
+          <h2 className="text-4xl font-bold text-white/60">₦0</h2>
           <p className="text-xs text-white/40">Lifetime earnings processed.</p>
         </div>
       </div>
@@ -312,17 +364,25 @@ function WalletTab() {
             </tr>
           </thead>
           <tbody className="divide-y divide-white/5">
-            {[1, 2, 3].map((i) => (
-              <tr key={i} className="hover:bg-white/5 transition-colors">
-                <td className="px-6 py-4 font-mono text-xs text-white/60">TRX-928374{i}</td>
-                <td className="px-6 py-4 font-bold">₦5,000</td>
-                <td className="px-6 py-4 text-white/40">Paystack</td>
+            {transactions.map((trx) => (
+              <tr key={trx.id} className="hover:bg-white/5 transition-colors">
+                <td className="px-6 py-4 font-mono text-xs text-white/60">{trx.reference}</td>
+                <td className="px-6 py-4 font-bold">₦{trx.amount.toLocaleString()}</td>
+                <td className="px-6 py-4 text-white/40 uppercase text-[10px]">{trx.method}</td>
                 <td className="px-6 py-4">
-                  <span className="px-2 py-1 bg-green-500/20 text-green-500 rounded-full text-[10px] font-bold uppercase">Success</span>
+                  <span className={cn(
+                    "px-2 py-1 rounded-full text-[10px] font-bold uppercase",
+                    trx.status === 'success' ? "bg-green-500/20 text-green-500" : "bg-red-500/20 text-red-500"
+                  )}>{trx.status}</span>
                 </td>
-                <td className="px-6 py-4 text-white/40">2026-04-09</td>
+                <td className="px-6 py-4 text-white/40">{new Date(trx.created_at).toLocaleDateString()}</td>
               </tr>
             ))}
+            {transactions.length === 0 && (
+              <tr>
+                <td colSpan={5} className="px-6 py-12 text-center text-white/20 font-mono text-xs uppercase tracking-widest italic">No neural transactions detected.</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>

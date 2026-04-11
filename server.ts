@@ -90,6 +90,19 @@ async function initDb() {
       )
     `);
 
+    await db.execute(`
+      CREATE TABLE IF NOT EXISTS transactions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT,
+        amount REAL,
+        method TEXT,
+        status TEXT,
+        reference TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY(user_id) REFERENCES business_configs(user_id)
+      )
+    `);
+
     console.log("Database schema initialized successfully.");
   } catch (error) {
     console.error("Failed to initialize database schema:", error);
@@ -104,6 +117,22 @@ app.get("/api/health", (req, res) => {
 });
 
 // Example: Get business config
+app.get("/api/config/search", async (req, res) => {
+  try {
+    const db = getDb();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+    
+    const { query } = req.query;
+    const result = await db.execute({
+      sql: "SELECT * FROM business_configs WHERE user_id = ? OR name LIKE ?",
+      args: [query, `%${query}%`],
+    });
+    res.json(result.rows[0] || null);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to search config" });
+  }
+});
+
 app.get("/api/config/:userId", async (req, res) => {
   try {
     const db = getDb();
@@ -290,6 +319,64 @@ app.post("/api/webhooks/paystack", async (req, res) => {
   // Paystack verification logic
   console.log("Paystack Webhook Received:", req.body);
   res.status(200).end();
+});
+
+// Transactions API
+app.get("/api/transactions/:userId", async (req, res) => {
+  try {
+    const db = getDb();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+    const { userId } = req.params;
+    const result = await db.execute({
+      sql: "SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC",
+      args: [userId],
+    });
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch transactions" });
+  }
+});
+
+app.post("/api/transactions", async (req, res) => {
+  try {
+    const db = getDb();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+    const { userId, amount, method, status, reference } = req.body;
+    await db.execute({
+      sql: "INSERT INTO transactions (id, user_id, amount, method, status, reference) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [Math.random().toString(36).substr(2, 9), userId, amount, method, status || 'success', reference || `TRX-${Math.random().toString(36).substr(2, 6).toUpperCase()}`],
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to save transaction" });
+  }
+});
+
+// Stats API
+app.get("/api/stats/:userId", async (req, res) => {
+  try {
+    const db = getDb();
+    if (!db) return res.status(503).json({ error: "Database not configured" });
+    const { userId } = req.params;
+    
+    const salesResult = await db.execute({
+      sql: "SELECT SUM(amount) as total FROM transactions WHERE user_id = ? AND status = 'success'",
+      args: [userId],
+    });
+    
+    const leadsResult = await db.execute({
+      sql: "SELECT COUNT(*) as count FROM leads WHERE user_id = ?",
+      args: [userId],
+    });
+
+    res.json({
+      totalSales: salesResult.rows[0]?.total || 0,
+      leadsCount: leadsResult.rows[0]?.count || 0,
+      conversionRate: leadsResult.rows[0]?.count > 0 ? ((salesResult.rows.length / leadsResult.rows[0]?.count) * 100).toFixed(1) : 0
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch stats" });
+  }
 });
 
 // Vite middleware setup

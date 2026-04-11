@@ -209,7 +209,33 @@ export default function App() {
       publishableKey={CLERK_PUBLISHABLE_KEY}
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      forceRedirectUrl="/dashboard"
+      afterSignInUrl="/dashboard"
+      afterSignUpUrl="/dashboard"
+      appearance={{
+        baseTheme: undefined,
+        variables: {
+          colorPrimary: '#06b6d4',
+          colorBackground: '#0a0a0a',
+          colorText: '#ffffff',
+          colorTextSecondary: 'rgba(255, 255, 255, 0.6)',
+          colorInputBackground: '#111111',
+          colorInputText: '#ffffff',
+          borderRadius: '12px',
+        },
+        elements: {
+          card: 'border border-cyan-500/20 shadow-[0_0_30px_rgba(6,182,212,0.1)] bg-black/80 backdrop-blur-xl',
+          headerTitle: 'text-2xl font-black uppercase tracking-tighter italic scifi-glow-text',
+          headerSubtitle: 'text-[10px] font-bold uppercase tracking-widest text-white/40 font-mono',
+          socialButtonsBlockButton: 'bg-white/5 border border-white/10 hover:bg-white/10 transition-all',
+          socialButtonsBlockButtonText: 'text-xs font-bold uppercase tracking-widest',
+          formButtonPrimary: 'bg-cyan-600 hover:bg-cyan-500 transition-all shadow-[0_0_20px_rgba(8,145,178,0.3)] border border-cyan-400/50 uppercase tracking-widest text-xs font-black py-3',
+          footerActionLink: 'text-cyan-400 hover:text-cyan-300 transition-colors font-bold',
+          formFieldLabel: 'text-[10px] font-bold uppercase tracking-widest text-white/60 font-mono',
+          formFieldInput: 'bg-black/40 border border-white/10 focus:border-cyan-500/50 transition-all text-sm',
+          dividerLine: 'bg-white/10',
+          dividerText: 'text-[10px] font-bold uppercase tracking-widest text-white/20 font-mono',
+        }
+      }}
     >
       <Router>
         <div className="min-h-screen bg-black text-white">
@@ -220,7 +246,7 @@ export default function App() {
               path="/sign-in/*" 
               element={
                 <div className="min-h-screen bg-[#0a0a0a] scifi-grid flex items-center justify-center p-4">
-                  <SignIn routing="path" path="/sign-in" forceRedirectUrl="/dashboard" />
+                  <SignIn routing="path" path="/sign-in" afterSignInUrl="/dashboard" />
                 </div>
               } 
             />
@@ -228,7 +254,7 @@ export default function App() {
               path="/sign-up/*" 
               element={
                 <div className="min-h-screen bg-[#0a0a0a] scifi-grid flex items-center justify-center p-4">
-                  <SignUp routing="path" path="/sign-up" forceRedirectUrl="/dashboard" />
+                  <SignUp routing="path" path="/sign-up" afterSignUpUrl="/dashboard" />
                 </div>
               } 
             />
