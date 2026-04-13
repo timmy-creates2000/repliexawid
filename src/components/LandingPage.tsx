@@ -3,7 +3,7 @@ import { motion } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { Zap, ShieldCheck, Cpu, Globe, MessageSquare, DollarSign, Activity, ChevronRight } from 'lucide-react';
 import ChatWidget from './ChatWidget';
-import { BusinessConfig } from '../lib/gemini';
+import type { BusinessConfig } from '../lib/types';
 
 export default function LandingPage({ config }: { config: BusinessConfig }) {
   return (

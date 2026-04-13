@@ -1,94 +1,255 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Send, Mic, MicOff, X, Bot, User, DollarSign, Package, ChevronDown, MessageSquare, Zap } from 'lucide-react';
-import { getAgentResponse, BusinessConfig } from '../lib/gemini';
+import React, { useState, useCallback, useEffect } from 'react';
+import { AnimatePresence } from 'motion/react';
+import { X, Zap, ChevronDown, Bot } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { api } from '../services/api';
+import type { BusinessConfig, ChatMessage, NegotiationState } from '../lib/types';
 
-interface Message {
-  role: 'user' | 'model';
-  parts: string;
-  timestamp: Date;
+import NegotiationBar from './widget/NegotiationBar';
+import MessageList from './widget/MessageList';
+import InputBar from './widget/InputBar';
+import PaymentPrompt from './widget/PaymentPrompt';
+import BookingCalendar from './widget/BookingCalendar';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const INITIAL_NEGOTIATION: NegotiationState = {
+  productId: null,
+  originalPrice: 0,
+  currentOffer: 0,
+  minPrice: 0,
+  offerCount: 0,
+  status: 'idle',
+};
+
+// ─── Widget background style helpers ─────────────────────────────────────────
+
+function getBgStyle(style: BusinessConfig['widgetBgStyle']): string {
+  switch (style) {
+    case 'light': return 'bg-white/95 text-gray-900';
+    case 'glass': return 'bg-white/10 backdrop-blur-2xl';
+    default: return 'bg-[#0a0a0a]/90 backdrop-blur-2xl';
+  }
 }
 
-export default function ChatWidget({ config, fullPage = false }: { config: BusinessConfig, fullPage?: boolean }) {
+function getBorderRadius(radius: BusinessConfig['widgetBorderRadius']): string {
+  switch (radius) {
+    case 'sharp': return 'rounded-none';
+    case 'pill': return 'rounded-[2rem]';
+    default: return 'rounded-3xl';
+  }
+}
+
+// ─── Main Widget ──────────────────────────────────────────────────────────────
+
+export default function ChatWidget({
+  config,
+  fullPage = false,
+}: {
+  config: BusinessConfig;
+  fullPage?: boolean;
+}) {
+  const welcomeMessage = config.widgetWelcomeMessage
+    || `Hi! I'm the AI sales agent for ${config.name}. Ask me about our products, pricing, or anything else — I'm here to help.`;
+
   const [isOpen, setIsOpen] = useState(fullPage);
-  const [messages, setMessages] = useState<Message[]>([
-    { role: 'model', parts: `Hello! I'm your AI assistant for ${config.name}. How can I help you today?`, timestamp: new Date() }
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: 'model', parts: welcomeMessage, timestamp: new Date() },
   ]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isListening, setIsListening] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [negotiation, setNegotiation] = useState<NegotiationState>(INITIAL_NEGOTIATION);
+  const [pendingPayment, setPendingPayment] = useState<{ productId: string; amount: number } | null>(null);
+  const [showBooking, setShowBooking] = useState(false);
+  const [customerEmail, setCustomerEmail] = useState('');
+  const [customerName, setCustomerName] = useState('');
 
+  // Auto-open delay
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (!fullPage && config.widgetAutoOpenDelay > 0) {
+      const timer = setTimeout(() => setIsOpen(true), config.widgetAutoOpenDelay * 1000);
+      return () => clearTimeout(timer);
     }
-  }, [messages, isTyping]);
+  }, [fullPage, config.widgetAutoOpenDelay]);
+
+  // Detect negotiation intent from user message
+  const updateNegotiationState = useCallback(
+    (message: string, currentNeg: NegotiationState): NegotiationState => {
+      if (!config.negotiationMode) return currentNeg;
+
+      const priceMatch = message.match(
+        /(?:pay|offer|give|do|accept|take|how about|what about|can you do)\s*(?:₦|N|naira)?\s*([\d,]+)/i
+      );
+      if (priceMatch) {
+        const offeredPrice = parseInt(priceMatch[1].replace(/,/g, ''));
+        let targetProduct =
+          config.products.find(p => message.toLowerCase().includes(p.name.toLowerCase())) ??
+          (currentNeg.productId ? config.products.find(p => p.id === currentNeg.productId) : null);
+        if (!targetProduct && config.products.length === 1) targetProduct = config.products[0];
+
+        if (targetProduct && offeredPrice > 0) {
+          return {
+            productId: targetProduct.id,
+            originalPrice: targetProduct.price,
+            currentOffer: offeredPrice,
+            minPrice: targetProduct.lastPrice,
+            offerCount: currentNeg.status === 'negotiating' ? currentNeg.offerCount + 1 : 1,
+            status: 'negotiating',
+          };
+        }
+      }
+
+      const mentionedProduct = config.products.find(p =>
+        message.toLowerCase().includes(p.name.toLowerCase())
+      );
+      if (mentionedProduct && currentNeg.status === 'idle') {
+        return {
+          ...currentNeg,
+          productId: mentionedProduct.id,
+          originalPrice: mentionedProduct.price,
+          minPrice: mentionedProduct.lastPrice,
+        };
+      }
+
+      return currentNeg;
+    },
+    [config]
+  );
 
   const handleSend = async (text?: string) => {
     const messageText = text || input;
     if (!messageText.trim()) return;
 
-    const userMessage: Message = { role: 'user', parts: messageText, timestamp: new Date() };
+    const userMessage: ChatMessage = { role: 'user', parts: messageText, timestamp: new Date() };
     setMessages(prev => [...prev, userMessage]);
     setInput('');
     setIsTyping(true);
 
-    // Detect lead info (simple email extraction)
-    const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
-    const emails = messageText.match(emailRegex);
-    if (emails && emails.length > 0) {
-      fetch('/api/leads', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: config.userId,
-          name: 'Anonymous User',
-          email: emails[0],
-          phone: ''
-        })
-      }).catch(err => console.error("Lead save error:", err));
-    }
+    const updatedNeg = updateNegotiationState(messageText, negotiation);
+    setNegotiation(updatedNeg);
 
-    const response = await getAgentResponse(messageText, messages, config);
-    
-    const aiMessage: Message = { role: 'model', parts: response || "I'm sorry, I couldn't process that.", timestamp: new Date() };
-    setMessages(prev => [...prev, aiMessage]);
-    setIsTyping(false);
+    try {
+      const response = await api.chat.send({
+        userId: config.userId,
+        message: messageText,
+        history: messages.map(m => ({ role: m.role, parts: m.parts })),
+        negotiationState: updatedNeg,
+        visitorEmail: customerEmail || undefined,
+        visitorName: customerName || undefined,
+      });
+
+      // Handle chat limit reached
+      if (response.error === 'chat_limit_reached') {
+        setMessages(prev => [
+          ...prev,
+          {
+            role: 'model',
+            parts: "You've reached the chat limit for this business. Please upgrade your plan to continue.",
+            timestamp: new Date(),
+          },
+        ]);
+        setIsTyping(false);
+        return;
+      }
+
+      // Save lead if email detected
+      if (response.detectedEmail && response.detectedEmail !== customerEmail) {
+        setCustomerEmail(response.detectedEmail);
+        api.leads.create({
+          userId: config.userId,
+          name: response.detectedName || customerName || 'Anonymous',
+          email: response.detectedEmail,
+          phone: '',
+        }).catch(console.error);
+      }
+
+      if (response.detectedName && !customerName) {
+        setCustomerName(response.detectedName);
+      }
+
+      // Handle booking trigger
+      if (response.bookingTrigger) {
+        setShowBooking(true);
+      }
+
+      // Handle payment trigger
+      if (response.paymentTrigger) {
+        setPendingPayment(response.paymentTrigger);
+        setNegotiation(prev => ({ ...prev, status: 'agreed' }));
+      }
+
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'model',
+          parts: response.text || "I'm sorry, I couldn't process that.",
+          timestamp: new Date(),
+        },
+      ]);
+    } catch (err) {
+      setMessages(prev => [
+        ...prev,
+        {
+          role: 'model',
+          parts: "Something went wrong. Please try again.",
+          timestamp: new Date(),
+        },
+      ]);
+    } finally {
+      setIsTyping(false);
+    }
+  };
+
+  const handlePaymentSuccess = async (ref: string) => {
+    const paidAmount = pendingPayment?.amount;
+    setPendingPayment(null);
+    setNegotiation(INITIAL_NEGOTIATION);
+
+    await api.transactions.create({
+      userId: config.userId,
+      amount: paidAmount ?? 0,
+      method: config.paymentMethod,
+      reference: ref,
+    }).catch(console.error);
+
+    setMessages(prev => [
+      ...prev,
+      {
+        role: 'model',
+        parts: `Payment confirmed! Reference: ${ref}. Thank you for your purchase${customerName ? `, ${customerName}` : ''}! You'll receive your product details shortly.`,
+        timestamp: new Date(),
+      },
+    ]);
   };
 
   const toggleVoice = () => {
     if (!('webkitSpeechRecognition' in window)) {
-      alert("Voice recognition is not supported in this browser.");
+      alert('Voice recognition is not supported in this browser.');
       return;
     }
-
-    if (isListening) {
-      setIsListening(false);
-    } else {
-      const recognition = new (window as any).webkitSpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = false;
-      recognition.lang = 'en-US';
-
-      recognition.onstart = () => setIsListening(true);
-      recognition.onend = () => setIsListening(false);
-      recognition.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        handleSend(transcript);
-      };
-
-      recognition.start();
-    }
+    if (isListening) { setIsListening(false); return; }
+    const recognition = new (window as any).webkitSpeechRecognition();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.lang = 'en-US';
+    recognition.onstart = () => setIsListening(true);
+    recognition.onend = () => setIsListening(false);
+    recognition.onresult = (e: any) => handleSend(e.results[0][0].transcript);
+    recognition.start();
   };
 
-  const widgetClasses = fullPage 
-    ? "w-full h-screen bg-[#0a0a0a]/80 flex flex-col overflow-hidden font-mono relative"
+  // ─── Styles ────────────────────────────────────────────────────────────────
+
+  const bgStyle = getBgStyle(config.widgetBgStyle);
+  const borderRadius = getBorderRadius(config.widgetBorderRadius);
+
+  const widgetClasses = fullPage
+    ? `w-full h-screen flex flex-col overflow-hidden font-mono relative ${bgStyle}`
     : cn(
-        "fixed bottom-6 w-[400px] h-[600px] bg-[#0a0a0a]/90 backdrop-blur-2xl border border-cyan-500/20 rounded-3xl shadow-[0_0_30px_rgba(6,182,212,0.1)] flex flex-col overflow-hidden z-50 font-mono transition-all duration-300",
-        config.widgetPosition === 'bottom-left' ? "left-6" : "right-6",
-        isOpen ? "opacity-100 translate-y-0" : "opacity-0 translate-y-10 pointer-events-none"
+        `fixed bottom-6 w-[400px] h-[600px] border border-cyan-500/20 shadow-[0_0_30px_rgba(6,182,212,0.1)] flex flex-col overflow-hidden z-50 font-mono transition-all duration-300 ${bgStyle} ${borderRadius}`,
+        config.widgetPosition === 'bottom-left' ? 'left-6' : 'right-6',
+        isOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-10 pointer-events-none'
       );
 
   return (
@@ -98,8 +259,8 @@ export default function ChatWidget({ config, fullPage = false }: { config: Busin
           onClick={() => setIsOpen(!isOpen)}
           style={{ backgroundColor: config.brandColor, boxShadow: `0 0 20px ${config.brandColor}40` }}
           className={cn(
-            "fixed bottom-6 w-14 h-14 rounded-full flex items-center justify-center z-50 transition-all hover:scale-110 active:scale-95 border border-white/20",
-            config.widgetPosition === 'bottom-left' ? "left-6" : "right-6"
+            'fixed bottom-6 w-14 h-14 rounded-full flex items-center justify-center z-50 transition-all hover:scale-110 active:scale-95 border border-white/20',
+            config.widgetPosition === 'bottom-left' ? 'left-6' : 'right-6'
           )}
         >
           {isOpen ? <X className="w-6 h-6 text-white" /> : <Zap className="w-6 h-6 text-white animate-pulse" />}
@@ -108,123 +269,105 @@ export default function ChatWidget({ config, fullPage = false }: { config: Busin
 
       <div className={widgetClasses}>
         {/* Header */}
-        <div className="p-6 bg-cyan-500/5 border-b border-cyan-500/10 flex items-center justify-between relative">
+        <div className="p-6 bg-cyan-500/5 border-b border-cyan-500/10 flex items-center justify-between relative flex-shrink-0">
           <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-cyan-500/50 to-transparent" />
           <div className="flex items-center gap-3">
-            <div 
+            <div
               style={{ backgroundColor: config.brandColor, boxShadow: `0 0 15px ${config.brandColor}80` }}
-              className="w-10 h-10 rounded-xl flex items-center justify-center border border-white/20"
+              className="w-10 h-10 rounded-xl flex items-center justify-center border border-white/20 overflow-hidden"
             >
-              <Zap className="w-6 h-6 text-white" />
+              {config.widgetAvatarUrl ? (
+                <img src={config.widgetAvatarUrl} alt="avatar" className="w-full h-full object-cover" />
+              ) : (
+                <Zap className="w-6 h-6 text-white" />
+              )}
             </div>
             <div>
-              <h3 className="font-black text-white text-xs uppercase tracking-tighter scifi-glow-text">{config.name} CORE</h3>
+              <h3 className="font-black text-white text-xs uppercase tracking-tighter scifi-glow-text">
+                {config.name} CORE
+              </h3>
               <div className="flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse shadow-[0_0_5px_rgba(34,211,238,1)]" />
-                <span className="text-[8px] text-cyan-400/60 uppercase tracking-[0.2em] font-bold">Neural Link Active</span>
+                <span className="text-[8px] text-cyan-400/60 uppercase tracking-[0.2em] font-bold">
+                  {config.aiModel ? config.aiModel.toUpperCase() : 'GEMINI'} · Neural Link Active
+                </span>
               </div>
             </div>
           </div>
           {!fullPage && (
-            <button 
-              onClick={() => setIsOpen(false)}
-              className="p-2 hover:bg-white/5 rounded-lg transition-colors"
-            >
+            <button onClick={() => setIsOpen(false)} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
               <ChevronDown className="w-5 h-5 text-white/40" />
             </button>
           )}
         </div>
 
-        {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-6 space-y-6 scrollbar-hide">
-          {messages.map((m, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={cn(
-                "flex gap-3 max-w-[85%]",
-                m.role === 'user' ? "ml-auto flex-row-reverse" : ""
-              )}
-            >
-              <div className={cn(
-                "w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0",
-                m.role === 'user' ? "bg-white/10" : ""
-              )}
-              style={m.role === 'model' ? { backgroundColor: `${config.brandColor}20`, color: config.brandColor } : {}}
-              >
-                {m.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
-              </div>
-              <div className={cn(
-                "p-4 rounded-2xl text-xs leading-relaxed border",
-                m.role === 'user' 
-                  ? "bg-white/5 text-white border-white/10 rounded-tr-none" 
-                  : "bg-cyan-500/5 text-cyan-50 border-cyan-500/20 rounded-tl-none shadow-[0_0_15px_rgba(6,182,212,0.05)]"
-              )}>
-                <div className="flex items-center gap-2 mb-1 opacity-40 text-[8px] uppercase tracking-widest">
-                  <span>{m.role === 'user' ? 'User' : 'Repliexa'}</span>
-                  <span>//</span>
-                  <span>{m.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                </div>
-                {m.parts}
-              </div>
-            </motion.div>
-          ))}
-          {isTyping && (
-            <div className="flex gap-3">
-              <div 
-                style={{ backgroundColor: `${config.brandColor}20`, color: config.brandColor }}
-                className="w-8 h-8 rounded-lg flex items-center justify-center"
-              >
-                <Bot className="w-4 h-4" />
-              </div>
-              <div className="p-4 bg-white/10 rounded-2xl rounded-tl-none flex gap-1">
-                <div className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce" />
-                <div className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce [animation-delay:0.2s]" />
-                <div className="w-1.5 h-1.5 bg-white/40 rounded-full animate-bounce [animation-delay:0.4s]" />
-              </div>
-            </div>
-          )}
-        </div>
+        {/* Negotiation Bar */}
+        <NegotiationBar
+          negotiation={negotiation}
+          onReset={() => setNegotiation(INITIAL_NEGOTIATION)}
+        />
 
-        {/* Input Area */}
-        <div className="p-6 bg-black/40 border-t border-cyan-500/10">
-          <div className="flex items-center gap-2 mb-4 overflow-x-auto scrollbar-hide">
-            <span className="text-[8px] text-cyan-500/40 uppercase font-bold tracking-widest flex-shrink-0">Commands:</span>
-            {['Pricing', 'Negotiate', 'Specs', 'Support'].map(cmd => (
-              <button key={cmd} className="px-2 py-1 bg-cyan-500/5 border border-cyan-500/10 rounded text-[8px] text-cyan-500/60 hover:text-cyan-400 hover:border-cyan-500/30 transition-all uppercase tracking-widest">
-                {cmd}
-              </button>
-            ))}
-          </div>
-          <div className="relative">
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="Enter query protocol..."
-              className="w-full bg-black/60 border border-cyan-500/20 rounded-2xl py-4 pl-6 pr-24 text-xs outline-none transition-all focus:border-cyan-500/50 focus:shadow-[0_0_15px_rgba(6,182,212,0.1)] placeholder:text-white/20"
+        {/* Message List */}
+        <MessageList
+          messages={messages}
+          isTyping={isTyping}
+          brandColor={config.brandColor}
+          businessName={config.name}
+          customerName={customerName}
+        />
+
+        {/* Booking Calendar */}
+        <AnimatePresence>
+          {showBooking && (
+            <BookingCalendar
+              userId={config.userId}
+              brandColor={config.brandColor}
+              onClose={() => setShowBooking(false)}
+              onBooked={(bookingId) => {
+                setShowBooking(false);
+                setMessages(prev => [
+                  ...prev,
+                  {
+                    role: 'model',
+                    parts: `Your booking (ID: ${bookingId}) has been confirmed!`,
+                    timestamp: new Date(),
+                  },
+                ]);
+              }}
             />
-            <div className="absolute right-2 top-2 flex gap-1">
-              <button 
-                onClick={toggleVoice}
-                className={cn(
-                  "p-2 rounded-xl transition-all",
-                  isListening ? "bg-red-500 text-white animate-pulse" : "hover:bg-white/5 text-white/40 hover:text-white"
-                )}
-              >
-                {isListening ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-              </button>
-              <button 
-                onClick={() => handleSend()}
-                style={{ backgroundColor: config.brandColor }}
-                className="p-2 text-white rounded-xl hover:opacity-90 transition-all shadow-lg"
-              >
-                <Send className="w-5 h-5" />
-              </button>
-            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Payment Prompt */}
+        <AnimatePresence>
+          {pendingPayment && (
+            <PaymentPrompt
+              config={config}
+              productId={pendingPayment.productId}
+              amount={pendingPayment.amount}
+              customerEmail={customerEmail}
+              onSuccess={handlePaymentSuccess}
+              onClose={() => setPendingPayment(null)}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* Input Bar */}
+        <InputBar
+          input={input}
+          onInputChange={setInput}
+          onSend={handleSend}
+          isListening={isListening}
+          onToggleVoice={toggleVoice}
+          brandColor={config.brandColor}
+        />
+
+        {/* Powered by badge */}
+        {config.showPoweredBy && (
+          <div className="text-center py-1 text-[8px] text-white/20 font-mono uppercase tracking-widest flex-shrink-0">
+            Powered by <span className="text-cyan-500/40">Repliexa</span>
           </div>
-        </div>
+        )}
       </div>
     </>
   );
